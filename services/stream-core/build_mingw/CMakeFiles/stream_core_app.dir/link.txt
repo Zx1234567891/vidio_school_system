@@ -1,3 +1,0 @@
-"D:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\stream_core_app.dir/objects.a
-D:\Software\mingw64\bin\ar.exe qc CMakeFiles\stream_core_app.dir/objects.a @CMakeFiles\stream_core_app.dir\objects1.rsp
-D:\Software\mingw64\bin\g++.exe -Wl,--whole-archive CMakeFiles\stream_core_app.dir/objects.a -Wl,--no-whole-archive -o stream_core_app.exe -Wl,--out-implib,libstream_core_app.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\stream_core_app.dir\linkLibs.rsp

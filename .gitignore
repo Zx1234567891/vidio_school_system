@@ -37,3 +37,13 @@ sucai/
 logs/
 # Claude 自动记忆
 .claude/
+# C++ 构建产物
+build*/
+*.exe
+*.dll
+*.a
+*.obj
+*.o
+# AI 模型权重（太大不入库）
+*.pt
+*.onnx

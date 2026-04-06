@@ -1,1 +1,0 @@
- libstream_core.a C:/ffmpeg/lib/avcodec.lib C:/ffmpeg/lib/avformat.lib C:/ffmpeg/lib/avutil.lib C:/ffmpeg/lib/swscale.lib C:/ffmpeg/lib/swresample.lib -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 
