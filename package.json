@@ -1,0 +1,32 @@
+{
+  "name": "campus-guard",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "cd apps/web && npm run dev",
+    "dev:api": "cd apps/api && python main.py",
+    "dev:ai": "cd services/ai-runtime && python main.py",
+    "build:web": "cd apps/web && npm run build",
+    "build:stream-core": "cd services/stream-core && mkdir -p build && cd build && cmake .. && make",
+    "test:api": "cd apps/api && pytest",
+    "test:stream-core": "cd services/stream-core/build && ctest",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "lint:web": "cd apps/web && npm run lint",
+    "type-check:web": "cd apps/web && npm run type-check"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^1.7.0",
+    "recharts": "^3.8.1",
+    "socket.io-client": "^4.8.3"
+  }
+}

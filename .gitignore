@@ -1,0 +1,39 @@
+# Campus Guard AI
+
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml
+
+# 视频素材（太大不入库）
+sucai/
+# Next.js 构建缓存
+.next/
+# 日志
+logs/
+# Claude 自动记忆
+.claude/

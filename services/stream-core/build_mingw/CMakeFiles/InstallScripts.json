@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/vidio_school_system/services/stream-core/build_mingw/cmake_install.cmake",
+		"D:/vidio_school_system/services/stream-core/build_mingw/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
