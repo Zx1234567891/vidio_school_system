@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   Video,
@@ -10,9 +10,11 @@ import {
   CheckCircle,
   Settings,
   Brain,
-  Menu
+  Menu,
+  LogOut,
+  User,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const navItems = [
   { href: '/', label: '概览', icon: LayoutDashboard },
@@ -30,7 +32,29 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [user, setUser] = useState<{ username: string; role: string; avatar: string } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    const userStr = localStorage.getItem('auth_user');
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+    if (userStr) {
+      setUser(JSON.parse(userStr));
+    }
+  }, [router]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    router.push('/login');
+  };
+
+  if (!user) return null;
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
@@ -52,7 +76,7 @@ export default function DashboardLayout({
           </button>
         </div>
 
-        <nav className="p-2 space-y-1">
+        <nav className="p-2 space-y-1 flex-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -73,6 +97,29 @@ export default function DashboardLayout({
             );
           })}
         </nav>
+
+        {/* 用户信息 & 退出 */}
+        <div className="border-t border-gray-200 p-3">
+          <div className={`flex items-center gap-3 ${!sidebarOpen ? 'justify-center' : ''}`}>
+            <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium flex-shrink-0">
+              {user.avatar}
+            </div>
+            {sidebarOpen && (
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">{user.username}</p>
+                <p className="text-xs text-gray-500 truncate">{user.role}</p>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={handleLogout}
+            className={`mt-2 w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors ${!sidebarOpen ? 'justify-center' : ''}`}
+            title="退出登录"
+          >
+            <LogOut className="w-4 h-4" />
+            {sidebarOpen && <span>退出登录</span>}
+          </button>
+        </div>
       </aside>
 
       {/* Main Content */}
