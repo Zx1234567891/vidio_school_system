@@ -122,6 +122,26 @@ npm install
 
 ### A. Docker Compose 一键启动（推荐）
 
+**最快路径**：项目根目录有一键脚本
+
+```bash
+# Windows（双击或 cmd 运行）
+start.bat        # 启动
+stop.bat         # 停止（保数据）
+stop.bat -v      # 停止并清数据卷
+
+# Linux / macOS / WSL
+./start.sh
+./stop.sh
+./stop.sh -v
+```
+
+脚本会自动：检查 Docker → 首次拉 pytorch 基础镜像 → `docker compose up -d --build` → 等健康检查通过 → 打开浏览器。
+
+如果你想手动走，按下面步骤来：
+
+
+
 **4.A.0 宿主机前置**：
 - Docker Desktop（WSL2 backend）≥ 4.30，内置 nvidia runtime（查 `docker info` 应含 `Runtimes: ... nvidia runc`）
 - Docker Engine 里配置镜像加速（Docker Hub 在国内不稳），Settings → Docker Engine：
