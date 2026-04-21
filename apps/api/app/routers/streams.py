@@ -1,6 +1,6 @@
-"""视频流管理路由 - 简化版"""
+"""视频流管理路由 - 接入真实 YOLO26 解码+推理运行时"""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 from typing import Optional, List, Dict, Any
@@ -10,6 +10,7 @@ import uuid
 from app.core.database import get_db
 from app.models.stream import Stream, StreamStatus, InputType
 from app.schemas.stream import StreamCreate, StreamUpdate
+from app.services.stream_runtime import get_stream_runtime
 
 router = APIRouter()
 
@@ -20,7 +21,11 @@ def generate_stream_id() -> str:
 
 
 def stream_to_dict(stream: Stream) -> Dict[str, Any]:
-    """将 Stream ORM 对象转换为字典"""
+    """将 Stream ORM 对象转换为字典，并合并运行时状态（检测结果/帧统计）。"""
+    rt = get_stream_runtime().get_runtime(stream.id)
+    running = bool(rt and rt.running)
+    last_dets = rt.last_detections if rt else []
+    top = last_dets[0] if last_dets else None
     return {
         "id": stream.id,
         "name": stream.name,
@@ -31,21 +36,29 @@ def stream_to_dict(stream: Stream) -> Dict[str, Any]:
         "target_fps": stream.target_fps,
         "max_queue_size": stream.max_queue_size,
         "ring_buffer_seconds": stream.ring_buffer_seconds,
-        "width": stream.width,
-        "height": stream.height,
-        "fps": stream.fps,
+        "width": (rt.width if rt and rt.width else stream.width),
+        "height": (rt.height if rt and rt.height else stream.height),
+        "fps": (rt.fps if rt and rt.fps else stream.fps),
         "bitrate": stream.bitrate,
         "codec": stream.codec,
         "location": stream.location,
         "latitude": stream.latitude,
         "longitude": stream.longitude,
-        "total_frames_decoded": stream.total_frames_decoded,
-        "total_dropped_frames": stream.total_dropped_frames,
-        "reconnect_count": stream.reconnect_count,
+        "total_frames_decoded": (rt.frames_decoded if rt else stream.total_frames_decoded),
+        "total_dropped_frames": (rt.frames_dropped if rt else stream.total_dropped_frames),
+        "reconnect_count": (rt.reconnect_count if rt else stream.reconnect_count),
         "created_at": stream.created_at.isoformat() if stream.created_at else None,
         "updated_at": stream.updated_at.isoformat() if stream.updated_at else None,
         "started_at": stream.started_at.isoformat() if stream.started_at else None,
-        "stopped_at": stream.stopped_at.isoformat() if stream.stopped_at else None
+        "stopped_at": stream.stopped_at.isoformat() if stream.stopped_at else None,
+        # 运行时新增
+        "is_running": running,
+        "infer_device": (rt.last_device if rt else None),
+        "last_infer_ms": (rt.last_infer_ms if rt else None),
+        "frames_inferred": (rt.frames_inferred if rt else 0),
+        "last_detections": last_dets,
+        "behavior_label": (top["class_name"] if top else None),
+        "severity": (top["severity"] if top else None),
     }
 
 
@@ -129,10 +142,30 @@ async def create_stream(
     await db.commit()
     await db.refresh(stream)
 
+    # auto_start：立即启动解码+推理线程
+    started = False
+    if getattr(stream_data, "auto_start", True):
+        try:
+            get_stream_runtime().start(
+                stream_id=stream.id,
+                url=stream.url,
+                input_type=stream.input_type.value,
+            )
+            stream.status = StreamStatus.RUNNING
+            stream.started_at = datetime.utcnow()
+            stream.updated_at = datetime.utcnow()
+            await db.commit()
+            await db.refresh(stream)
+            started = True
+        except Exception as e:
+            stream.status = StreamStatus.ERROR
+            stream.status_message = str(e)
+            await db.commit()
+
     return {
         "code": 0,
-        "message": "Stream created successfully",
-        "data": stream_to_dict(stream)
+        "message": "Stream created" + (" and started" if started else ""),
+        "data": stream_to_dict(stream),
     }
 
 
@@ -216,6 +249,9 @@ async def delete_stream(
             detail=f"Stream {stream_id} not found"
         )
 
+    # 先停止运行时线程，再软删
+    get_stream_runtime().stop(stream_id)
+
     stream.is_deleted = True
     stream.deleted_at = datetime.utcnow()
     stream.status = StreamStatus.STOPPED
@@ -249,8 +285,22 @@ async def start_stream(
             detail=f"Stream {stream_id} not found"
         )
 
+    try:
+        get_stream_runtime().start(
+            stream_id=stream.id,
+            url=stream.url,
+            input_type=stream.input_type.value,
+        )
+    except Exception as e:
+        stream.status = StreamStatus.ERROR
+        stream.status_message = str(e)
+        stream.updated_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
     stream.status = StreamStatus.RUNNING
     stream.started_at = datetime.utcnow()
+    stream.status_message = None
     stream.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(stream)
@@ -280,6 +330,8 @@ async def stop_stream(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Stream {stream_id} not found"
         )
+
+    get_stream_runtime().stop(stream_id)
 
     stream.status = StreamStatus.STOPPED
     stream.stopped_at = datetime.utcnow()
@@ -313,8 +365,24 @@ async def restart_stream(
             detail=f"Stream {stream_id} not found"
         )
 
+    runtime = get_stream_runtime()
+    runtime.stop(stream_id)
+    try:
+        runtime.start(
+            stream_id=stream.id,
+            url=stream.url,
+            input_type=stream.input_type.value,
+        )
+    except Exception as e:
+        stream.status = StreamStatus.ERROR
+        stream.status_message = str(e)
+        stream.updated_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
     stream.status = StreamStatus.RUNNING
     stream.reconnect_count = 0
+    stream.status_message = None
     stream.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(stream)
@@ -324,3 +392,89 @@ async def restart_stream(
         "message": "Stream restarted successfully",
         "data": stream_to_dict(stream)
     }
+
+
+@router.get("/browse/local-files")
+async def browse_local_files():
+    """列出后端可见的视频文件，供前端「添加流」的文件下拉使用。
+
+    扫描 `settings.FILE_BROWSE_ROOTS` 下所有指定扩展名的视频文件，返回
+    （容器内的）绝对路径；前端直接把 path 放进 `url` 字段即可创建流。
+    """
+    from pathlib import Path
+    from app.core.config import settings as cfg
+
+    roots = [r.strip() for r in (cfg.FILE_BROWSE_ROOTS or "").split(",") if r.strip()]
+    exts = {e.strip().lower() for e in (cfg.FILE_BROWSE_EXTS or "").split(",") if e.strip()}
+    limit = int(cfg.FILE_BROWSE_MAX or 200)
+
+    items: List[Dict[str, Any]] = []
+    seen = set()
+    for root in roots:
+        p = Path(root)
+        if not p.exists() or not p.is_dir():
+            continue
+        try:
+            root_abs = p.resolve()
+        except Exception:
+            continue
+        for f in root_abs.rglob("*"):
+            if len(items) >= limit:
+                break
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in exts:
+                continue
+            try:
+                full = str(f.resolve())
+            except Exception:
+                full = str(f)
+            if full in seen:
+                continue
+            seen.add(full)
+            try:
+                rel = str(f.relative_to(root_abs)).replace("\\", "/")
+            except Exception:
+                rel = f.name
+            try:
+                size_mb = round(f.stat().st_size / 1024 / 1024, 1)
+            except Exception:
+                size_mb = 0
+            # 显示名：目录名 + 文件名，便于在下拉里快速识别
+            parent = f.parent.name or ""
+            label = f"{parent}/{f.name}" if parent else f.name
+            items.append({
+                "path": full,      # 容器/后端可见路径（给 url 用）
+                "relative": rel,
+                "name": f.name,
+                "label": label,
+                "size_mb": size_mb,
+                "root": str(root_abs),
+            })
+        if len(items) >= limit:
+            break
+
+    items.sort(key=lambda x: x["label"].lower())
+    return {"code": 0, "data": {"items": items, "total": len(items), "roots": roots}}
+
+
+@router.get("/{stream_id}/snapshot")
+async def stream_snapshot(stream_id: str):
+    """返回最新叠加了检测框的 JPEG 单帧（供前端轮询）"""
+    runtime = get_stream_runtime()
+    jpeg = runtime.get_snapshot(stream_id)
+    if not jpeg:
+        # 尚未就绪：轻度等待
+        import asyncio as _asyncio
+        for _ in range(30):
+            jpeg = runtime.get_snapshot(stream_id)
+            if jpeg:
+                break
+            await _asyncio.sleep(0.1)
+    if not jpeg:
+        raise HTTPException(status_code=503, detail="frame not ready")
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )

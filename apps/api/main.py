@@ -18,6 +18,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.services.websocket_manager import WebSocketManager
 from app.services.event_publisher import EventPublisher
+from app.services.stream_runtime import get_stream_runtime
 
 # WebSocket 管理器
 ws_manager = WebSocketManager()
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
 
     # 关闭时清理
     await event_publisher.stop()
+    get_stream_runtime().stop_all()
     print("👋 Campus Guard API 关闭")
 
 

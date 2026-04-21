@@ -2,7 +2,8 @@
 演示模式API路由 - 提供模拟数据接口
 """
 from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
 import os
 import sys
 
@@ -51,6 +52,54 @@ async def get_demo_streams() -> Dict[str, Any]:
             "total": len(streamer.streams)
         }
     }
+
+
+class CreateStreamRequest(BaseModel):
+    url: str = Field(..., description="RTSP/RTMP URL、文件绝对路径或摄像头索引字符串")
+    input_type: str = Field("rtsp", description="rtsp | rtmp | file | webcam")
+    name: Optional[str] = Field(None, description="显示名称，留空自动生成")
+    behavior_label: Optional[str] = Field(None, description="初始行为标签，默认 '实时检测'")
+    category: Optional[str] = Field("自定义", description="分类，仅用于展示")
+    auto_start: bool = Field(True, description="创建后是否立即启动推流")
+
+
+@router.post("/demo/streams")
+async def create_demo_stream(req: CreateStreamRequest) -> Dict[str, Any]:
+    """动态新增一路流（支持 RTSP / RTMP / 本地文件 / 摄像头）。"""
+    streamer = get_streamer()
+    if not streamer:
+        raise HTTPException(status_code=503, detail="演示模式未初始化")
+
+    stream_id = streamer.add_stream(
+        url=req.url,
+        name=req.name,
+        input_type=req.input_type,
+        behavior_label=req.behavior_label or "",
+        category=req.category or "自定义",
+    )
+    if not stream_id:
+        raise HTTPException(status_code=400, detail="添加失败：URL 无效或文件不存在")
+
+    started = False
+    if req.auto_start:
+        started = streamer.start_stream(stream_id)
+
+    return {
+        "code": 0,
+        "message": "创建成功" + ("并已启动" if started else ""),
+        "data": streamer.get_stream(stream_id),
+    }
+
+
+@router.delete("/demo/streams/{stream_id}")
+async def delete_demo_stream(stream_id: str) -> Dict[str, Any]:
+    """删除一路流。"""
+    streamer = get_streamer()
+    if not streamer:
+        raise HTTPException(status_code=503, detail="演示模式未初始化")
+    if not streamer.remove_stream(stream_id):
+        raise HTTPException(status_code=404, detail="流不存在")
+    return {"code": 0, "message": "已删除"}
 
 
 @router.post("/demo/streams/{stream_id}/start")

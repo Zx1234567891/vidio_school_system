@@ -18,17 +18,21 @@ class Settings(BaseSettings):
     # 模型路径
     MODEL_PATH: str = "./models"
 
-    # 推理配置
-    INFERENCE_DEVICE: str = "cpu"  # cpu, cuda
+    # 推理配置 (默认使用 CUDA；无 GPU 环境可通过 .env 或环境变量 INFERENCE_DEVICE=cpu 覆盖)
+    INFERENCE_DEVICE: str = "cuda:0"
     BATCH_SIZE: int = 1
+    # 是否使用真实模型（默认 True；无 ultralytics/GPU 时 pipeline 会自动降级为 mock）
+    USE_REAL_MODELS: bool = True
 
-    # 检测器配置 (YOLO)
-    DETECTOR_MODEL: str = "yolov8n"
-    DETECTOR_CONFIDENCE: float = 0.3  # 降低阈值以检测小目标
+    # 检测器配置 (YOLO26 - 校园行为自训练模型)
+    # 11 类：Kick / Laying / Phone / Pointing / Slap face / Slap table /
+    #       Smoking / Squating / Stand / Touch / Hit wall
+    DETECTOR_MODEL: str = "yolo26_campus"
+    DETECTOR_CONFIDENCE: float = 0.35
     DETECTOR_IOU: float = 0.45
     DETECTOR_CLASSES: List[str] = [
-        "person", "phone", "smoke", "cigarette", "fire",
-        "bag", "camera", "backpack", "knife", "mask"
+        "Kick", "Laying", "Phone", "Pointing", "Slap face",
+        "Slap table", "Smoking", "Squating", "Stand", "Touch", "Hit wall",
     ]
 
     # 跟踪器配置 (ByteTrack)

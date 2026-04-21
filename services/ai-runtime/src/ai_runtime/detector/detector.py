@@ -1,15 +1,9 @@
 """
-检测器模块 - 基于 YOLO 的目标检测
+检测器模块 - 基于 YOLO26 的校园行为检测
 
-支持的类别：
-- person: 人员
-- phone: 手机
-- smoke/cigarette: 烟雾/香烟
-- fire: 火焰
-- bag/backpack: 包/背包
-- camera: 摄像头
-- knife: 刀具
-- mask: 口罩
+自训练模型 `yolo26_campus.pt`，11 类：
+  0 Kick / 1 Laying / 2 Phone / 3 Pointing / 4 Slap face /
+  5 Slap table / 6 Smoking / 7 Squating / 8 Stand / 9 Touch / 10 Hit wall
 """
 
 from abc import ABC, abstractmethod
@@ -51,44 +45,42 @@ class BaseDetector(ABC):
 
 class YOLODetector(BaseDetector):
     """
-    YOLO 检测器实现
+    YOLO26 检测器实现 - 校园 11 类行为
 
-    使用 ultralytics YOLOv8 作为基线
+    使用自训练模型 `yolo26_campus.pt` (best mAP50-95 ≈ 0.987 @ test set)
     """
 
-    # 类别映射 - COCO 基础 + 自定义
+    # YOLO26 自训练类别映射
     CLASS_NAMES = {
-        0: "person",
-        1: "bicycle", 2: "car", 3: "motorcycle", 4: "airplane", 5: "bus",
-        6: "train", 7: "truck", 8: "boat", 9: "traffic light", 10: "fire hydrant",
-        11: "stop sign", 12: "parking meter", 13: "bench", 14: "bird", 15: "cat",
-        16: "dog", 17: "horse", 18: "sheep", 19: "cow", 20: "elephant",
-        21: "bear", 22: "zebra", 23: "giraffe", 24: "backpack", 25: "umbrella",
-        26: "handbag", 27: "tie", 28: "suitcase", 29: "frisbee", 30: "skis",
-        31: "snowboard", 32: "sports ball", 33: "kite", 34: "baseball bat",
-        35: "baseball glove", 36: "skateboard", 37: "surfboard", 38: "tennis racket",
-        39: "bottle", 40: "wine glass", 41: "cup", 42: "fork", 43: "knife",
-        44: "spoon", 45: "bowl", 46: "banana", 47: "apple", 48: "sandwich",
-        49: "orange", 50: "broccoli", 51: "carrot", 52: "hot dog", 53: "pizza",
-        54: "donut", 55: "cake", 56: "chair", 57: "couch", 58: "potted plant",
-        59: "bed", 60: "dining table", 61: "toilet", 62: "tv", 63: "laptop",
-        64: "mouse", 65: "remote", 66: "keyboard", 67: "cell phone",
-        68: "microwave", 69: "oven", 70: "toaster", 71: "sink", 72: "refrigerator",
-        73: "book", 74: "clock", 75: "vase", 76: "scissors", 77: "teddy bear",
-        78: "hair drier", 79: "toothbrush"
+        0: "Kick",
+        1: "Laying",
+        2: "Phone",
+        3: "Pointing",
+        4: "Slap face",
+        5: "Slap table",
+        6: "Smoking",
+        7: "Squating",
+        8: "Stand",
+        9: "Touch",
+        10: "Hit wall",
     }
 
-    # 关注的目标类别（校园安防场景）
-    TARGET_CLASSES = {
-        "person": 0,
-        "backpack": 24,
-        "handbag": 26,
-        "suitcase": 28,
-        "bottle": 39,
-        "knife": 43,
-        "cell phone": 67,
-        "laptop": 63,
-        "camera": 77,  # 破坏公共设施
+    # 全部 11 类都是关注目标（整个模型就是为校园场景训练的）
+    TARGET_CLASSES = {name: cid for cid, name in CLASS_NAMES.items()}
+
+    # 行为严重等级（供告警分级使用）
+    BEHAVIOR_SEVERITY = {
+        "Kick": "high",
+        "Slap face": "high",
+        "Hit wall": "high",
+        "Slap table": "medium",
+        "Smoking": "medium",
+        "Phone": "medium",
+        "Pointing": "low",
+        "Touch": "low",
+        "Laying": "low",
+        "Squating": "low",
+        "Stand": "info",
     }
 
     def __init__(self, model_path: Optional[str] = None, device: str = "cpu"):
@@ -98,15 +90,26 @@ class YOLODetector(BaseDetector):
         self._ready = False
 
     def load_model(self) -> bool:
-        """加载 YOLO 模型"""
+        """加载 YOLO 模型；无 CUDA 时自动降级为 CPU。"""
         try:
             from ultralytics import YOLO
+            try:
+                import torch
+                if self.device.startswith("cuda") and not torch.cuda.is_available():
+                    print(f"[YOLODetector] CUDA 不可用，自动降级为 CPU")
+                    self.device = "cpu"
+            except Exception:
+                pass
 
             model_file = f"{self.model_path}/{settings.DETECTOR_MODEL}.pt"
             self.model = YOLO(model_file)
-            self.model.to(self.device)
+            # 预热 + 绑定设备
+            _ = self.model.predict(
+                np.zeros((320, 320, 3), dtype=np.uint8),
+                device=self.device, verbose=False,
+            )
             self._ready = True
-            print(f"[YOLODetector] Model loaded: {model_file}")
+            print(f"[YOLODetector] Model loaded: {model_file} (device={self.device})")
             return True
         except Exception as e:
             print(f"[YOLODetector] Failed to load model: {e}")
@@ -119,12 +122,13 @@ class YOLODetector(BaseDetector):
 
         start_time = time.time()
 
-        # YOLO 推理
-        results = self.model(
+        # YOLO 推理（在指定设备）
+        results = self.model.predict(
             image,
             conf=settings.DETECTOR_CONFIDENCE,
             iou=settings.DETECTOR_IOU,
-            verbose=False
+            device=self.device,
+            verbose=False,
         )
 
         detections = []
@@ -184,34 +188,21 @@ class MockDetector(BaseDetector):
         detections = []
         h, w = image.shape[:2]
 
-        # 模拟检测到 1-3 个人
-        num_persons = random.randint(1, 3)
-        for i in range(num_persons):
-            x = random.uniform(0.1, 0.7)
-            y = random.uniform(0.1, 0.7)
-            width = random.uniform(0.05, 0.15)
-            height = random.uniform(0.1, 0.3)
-
+        # 模拟 YOLO26 的 11 类行为输出
+        pool = list(YOLODetector.CLASS_NAMES.items())
+        num = random.randint(1, 3)
+        for _ in range(num):
+            cid, cname = random.choice(pool)
             detection = Detection(
-                class_name="person",
-                class_id=0,
-                confidence=random.uniform(0.7, 0.95),
-                bbox=BoundingBox(x=x, y=y, width=width, height=height)
-            )
-            detections.append(detection)
-
-        # 偶尔检测到手机
-        if random.random() < 0.3:
-            detection = Detection(
-                class_name="cell phone",
-                class_id=67,
-                confidence=random.uniform(0.6, 0.85),
+                class_name=cname,
+                class_id=cid,
+                confidence=random.uniform(0.6, 0.95),
                 bbox=BoundingBox(
-                    x=random.uniform(0.2, 0.8),
-                    y=random.uniform(0.2, 0.8),
-                    width=0.02,
-                    height=0.04
-                )
+                    x=random.uniform(0.1, 0.7),
+                    y=random.uniform(0.1, 0.7),
+                    width=random.uniform(0.1, 0.3),
+                    height=random.uniform(0.15, 0.4),
+                ),
             )
             detections.append(detection)
 
@@ -222,7 +213,7 @@ class MockDetector(BaseDetector):
 
     @property
     def supported_classes(self) -> List[str]:
-        return ["person", "cell phone", "backpack"]
+        return list(YOLODetector.CLASS_NAMES.values())
 
 
 def create_detector(detector_type: str = "yolo", **kwargs) -> BaseDetector:

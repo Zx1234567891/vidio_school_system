@@ -26,6 +26,7 @@ class InputType(str, enum.Enum):
     RTSP = "rtsp"
     RTMP = "rtmp"
     FILE = "file"
+    WEBCAM = "webcam"
 
 
 class Stream(Base):

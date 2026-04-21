@@ -22,6 +22,7 @@ class StreamCreate(BaseModel):
     latitude: Optional[float] = Field(None, ge=-90, le=90, description="纬度")
     longitude: Optional[float] = Field(None, ge=-180, le=180, description="经度")
     region_config: Optional[Dict[str, Any]] = Field(None, description="区域配置")
+    auto_start: bool = Field(True, description="创建后立即启动 YOLO26 推理推流")
 
 
 class StreamUpdate(BaseModel):

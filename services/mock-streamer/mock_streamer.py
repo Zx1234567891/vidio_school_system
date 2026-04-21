@@ -6,6 +6,7 @@ import sys
 import cv2
 import json
 import time
+import uuid
 import asyncio
 import subprocess
 from pathlib import Path
@@ -14,6 +15,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import threading
 import queue
+
+from yolo26_infer import get_detector, CLASS_NAMES as YOLO26_CLASSES, SEVERITY as YOLO26_SEVERITY
 
 # 视频到行为标签的映射
 VIDEO_BEHAVIOR_MAP = {
@@ -49,6 +52,8 @@ class StreamInfo:
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     loop: bool = True
+    # 最近一次帧上检测到的类别（供前端展示、告警分级）
+    last_detections: Optional[List[Dict]] = None
 
 
 class MockStreamer:
@@ -168,33 +173,92 @@ class MockStreamer:
         print(f"[*] 停止推流: {stream_id}")
         return True
 
-    def _stream_worker(self, stream_id: str, stop_event: threading.Event):
-        """推流工作线程"""
-        stream = self.streams[stream_id]
-        video_path = stream.video_path
+    def _open_capture(self, stream: StreamInfo) -> cv2.VideoCapture:
+        """根据 input_type 打开不同来源：file / rtsp / rtmp / webcam。"""
+        src = stream.video_path
+        if stream.input_type == "webcam":
+            # video_path 存的是摄像头索引字符串
+            try:
+                idx = int(src)
+            except ValueError:
+                idx = 0
+            return cv2.VideoCapture(idx)
+        if stream.input_type in ("rtsp", "rtmp"):
+            # RTSP 偏好 TCP，减少丢包
+            if stream.input_type == "rtsp":
+                os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+            return cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        return cv2.VideoCapture(src)
 
-        cap = cv2.VideoCapture(video_path)
+    def _stream_worker(self, stream_id: str, stop_event: threading.Event):
+        """推流工作线程：解码 → YOLO26 推理叠加 → JPEG 编码 → 缓冲"""
+        stream = self.streams[stream_id]
+
+        cap = self._open_capture(stream)
         if not cap.isOpened():
             stream.status = "error"
-            print(f"[!] 无法打开视频: {video_path}")
+            print(f"[!] 无法打开视频源: {stream.video_path} ({stream.input_type})")
             return
 
-        frame_delay = 1.0 / stream.fps
+        # 若分辨率未知（如新建的 RTSP），探测一次
+        if not stream.width or not stream.height:
+            stream.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
+            stream.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
+        if not stream.fps or stream.fps <= 0:
+            probed = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            stream.fps = probed if probed > 0 else 25.0
+
+        frame_delay = 1.0 / max(stream.fps, 1.0)
         last_frame_time = time.time()
+
+        detector = get_detector()  # 可能为 None（ultralytics 不可用时降级）
+        infer_every = max(1, int(os.environ.get("YOLO26_INFER_EVERY", "2")))  # 默认每 2 帧推理一次
+        last_dets: List = []
+        frame_idx = 0
 
         try:
             while not stop_event.is_set():
                 ret, frame = cap.read()
 
                 if not ret:
-                    if stream.loop:
+                    # 文件类型可循环；实时流尝试重开一次
+                    if stream.input_type == "file" and stream.loop:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         stream.current_frame = 0
                         continue
-                    else:
-                        break
+                    if stream.input_type in ("rtsp", "rtmp"):
+                        cap.release()
+                        time.sleep(1.0)
+                        cap = self._open_capture(stream)
+                        if cap.isOpened():
+                            continue
+                    break
 
                 stream.current_frame += 1
+                frame_idx += 1
+
+                # YOLO26 推理（跳帧以节省算力；画框始终用最近一次结果）
+                if detector is not None:
+                    if frame_idx % infer_every == 0:
+                        try:
+                            last_dets = detector.infer(frame)
+                        except Exception as e:
+                            print(f"[!] YOLO26 推理错误 {stream_id}: {e}")
+                            last_dets = []
+                    if last_dets:
+                        frame = detector.draw(frame, last_dets)
+                        # 更新流元信息
+                        stream.last_detections = [
+                            {
+                                "class_name": YOLO26_CLASSES[cid] if 0 <= cid < len(YOLO26_CLASSES) else str(cid),
+                                "severity": YOLO26_SEVERITY.get(
+                                    YOLO26_CLASSES[cid] if 0 <= cid < len(YOLO26_CLASSES) else "", "info"
+                                ),
+                                "confidence": round(conf, 3),
+                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                            }
+                            for x1, y1, x2, y2, cid, conf in last_dets
+                        ]
 
                 # 将帧编码为 JPEG 并存入最新帧缓冲区
                 ret_enc, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -202,12 +266,13 @@ class MockStreamer:
                     with self._frame_locks[stream_id]:
                         self.latest_frames[stream_id] = jpeg.tobytes()
 
-                # 控制帧率
-                current_time = time.time()
-                elapsed = current_time - last_frame_time
-                if elapsed < frame_delay:
-                    time.sleep(frame_delay - elapsed)
-                last_frame_time = time.time()
+                # 控制帧率（仅对文件源；实时流按实际来帧节奏）
+                if stream.input_type == "file":
+                    current_time = time.time()
+                    elapsed = current_time - last_frame_time
+                    if elapsed < frame_delay:
+                        time.sleep(frame_delay - elapsed)
+                    last_frame_time = time.time()
 
         except Exception as e:
             stream.status = "error"
@@ -217,6 +282,93 @@ class MockStreamer:
             if stream.status != "error":
                 stream.status = "stopped"
             print(f"[*] 推流结束: {stream_id}")
+
+    def add_stream(self, url: str, name: Optional[str] = None,
+                   input_type: str = "rtsp", loop: bool = True,
+                   behavior_label: str = "", category: str = "自定义") -> Optional[str]:
+        """动态新增一路流（RTSP/RTMP/文件/摄像头）。返回 stream_id。
+
+        - input_type=rtsp/rtmp：url 为流地址
+        - input_type=file：url 为本地文件绝对路径
+        - input_type=webcam：url 为本地摄像头索引（"0"/"1"...）
+        """
+        if not url:
+            return None
+        input_type = (input_type or "rtsp").lower()
+        if input_type not in ("rtsp", "rtmp", "file", "webcam"):
+            return None
+
+        # 文件类型需校验存在
+        if input_type == "file" and not os.path.exists(url):
+            print(f"[!] 文件不存在: {url}")
+            return None
+
+        width = height = 0
+        fps = 0.0
+        total_frames = 0
+
+        # 尝试探测基本信息（失败不阻塞添加）
+        try:
+            if input_type == "webcam":
+                probe = cv2.VideoCapture(int(url))
+            elif input_type in ("rtsp", "rtmp"):
+                if input_type == "rtsp":
+                    os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+                probe = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+            else:
+                probe = cv2.VideoCapture(url)
+            if probe.isOpened():
+                width = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
+                height = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
+                fps = probe.get(cv2.CAP_PROP_FPS) or 0.0
+                total_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+            probe.release()
+        except Exception as e:
+            print(f"[!] 探测失败（继续创建）: {e}")
+
+        stream_id = f"stream_{uuid.uuid4().hex[:8]}"
+        display = name or (
+            f"摄像头 {url}" if input_type == "webcam"
+            else Path(url).name if input_type == "file"
+            else url.split("/")[-1] or url
+        )
+        stream = StreamInfo(
+            id=stream_id,
+            name=display,
+            video_path=url,
+            status="stopped",
+            input_type=input_type,
+            width=width,
+            height=height,
+            fps=fps if fps > 0 else 25.0,
+            total_frames=total_frames,
+            current_frame=0,
+            behavior_label=behavior_label or "实时检测",
+            severity="",
+            category=category,
+            loop=loop,
+        )
+        self.streams[stream_id] = stream
+        self._frame_locks[stream_id] = threading.Lock()
+        print(f"[*] 新增流: {stream_id} [{input_type}] {url}")
+        return stream_id
+
+    def remove_stream(self, stream_id: str) -> bool:
+        """删除一路流（会先停止）。"""
+        if stream_id not in self.streams:
+            return False
+        self.stop_stream(stream_id)
+        # 等线程退出（最多等 2s）
+        t = self.threads.get(stream_id)
+        if t and t.is_alive():
+            t.join(timeout=2.0)
+        self.streams.pop(stream_id, None)
+        self.stop_events.pop(stream_id, None)
+        self.threads.pop(stream_id, None)
+        self._frame_locks.pop(stream_id, None)
+        self.latest_frames.pop(stream_id, None)
+        print(f"[*] 删除流: {stream_id}")
+        return True
 
     def start_all(self):
         """启动所有流"""

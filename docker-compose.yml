@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -16,7 +14,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U campus_guard"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -29,28 +27,68 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # 后续阶段启用
-  # api:
-  #   build:
-  #     context: .
-  #     dockerfile: infra/docker/api.Dockerfile
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - postgres
-  #     - redis
+  ai-runtime:
+    build:
+      context: .
+      dockerfile: infra/docker/ai-runtime.Dockerfile
+    container_name: campus-guard-ai-runtime
+    ports:
+      - "9001:9001"
+    environment:
+      INFERENCE_DEVICE: "cuda:0"
+      DETECTOR_MODEL: "yolo26_campus"
+      USE_REAL_MODELS: "True"
+    # GPU 透传（Docker Desktop WSL2 已自动注册 nvidia runtime）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  # web:
-  #   build:
-  #     context: .
-  #     dockerfile: infra/docker/web.Dockerfile
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - api
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: campus-guard-api
+    ports:
+      - "8000:8000"
+    environment:
+      AI_RUNTIME_URL: "http://ai-runtime:9001"
+      DATABASE_URL: "postgresql+asyncpg://campus_guard:campus_guard_secret@postgres:5432/campus_guard"
+      USE_SQLITE_FALLBACK: "True"
+      SQLITE_PATH: "/data/campus_guard.db"
+      INFER_EVERY_N: "2"
+      JPEG_QUALITY: "75"
+      MAX_CONCURRENT_STREAMS: "20"
+    volumes:
+      - api_data:/data
+      # 测试视频映射进容器（input_type=file 时用路径 /project1/<class>/<name>.mp4）
+      - ./project1:/project1:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-runtime:
+        condition: service_started
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: "http://localhost:8000/api/v1"
+    container_name: campus-guard-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
   redis_data:
+  api_data:

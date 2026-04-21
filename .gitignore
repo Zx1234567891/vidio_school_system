@@ -47,3 +47,14 @@ build*/
 # AI 模型权重（太大不入库）
 *.pt
 *.onnx
+# 例外：自训练的 YOLO26 校园行为模型必须入库（~5MB，部署依赖）
+!services/ai-runtime/models/yolo26_campus.pt
+
+# 测试视频素材（太大不入库）
+project1/
+
+# 运行时数据（SQLite、临时快照等）
+apps/api/data/
+apps/api/*.jpg
+services/ai-runtime/*.jpg
+docker_e2e.jpg

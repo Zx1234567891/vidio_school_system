@@ -1,0 +1,36 @@
+# 压缩 docker build 上下文，排除大目录
+**/node_modules
+**/.next
+**/build
+**/build_mingw
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.venv
+**/venv
+
+# 日志与临时
+logs
+*.log
+services/ai-runtime/runs
+services/ai-runtime/*.jpg
+services/ai-runtime/phase1_result.jpg
+apps/api/e2e_snap.jpg
+apps/api/data
+
+# 演示素材（太大且容器不需要；要用就 volume 挂）
+sucai
+project1
+demo_data
+
+# IDE / VCS
+.git
+.idea
+.vscode
+
+# 不需要的旧路径
+services/stream-core/build
+services/stream-core/build_mingw
+services/mock-streamer/__pycache__
