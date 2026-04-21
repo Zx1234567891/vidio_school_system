@@ -126,17 +126,20 @@ npm install
 
 ```bash
 # Windows（双击或 cmd 运行）
-start.bat        # 启动
+start.bat        # 启动全栈（检查 Docker → 构建 → 等就绪 → 开浏览器）
+demo.bat         # 启动 + 自动推 11 路演示流（project1 下各类视频）
 stop.bat         # 停止（保数据）
 stop.bat -v      # 停止并清数据卷
 
 # Linux / macOS / WSL
 ./start.sh
+./demo.sh
 ./stop.sh
 ./stop.sh -v
 ```
 
-脚本会自动：检查 Docker → 首次拉 pytorch 基础镜像 → `docker compose up -d --build` → 等健康检查通过 → 打开浏览器。
+- `start` 会自动：检查 Docker → 首次拉 pytorch 基础镜像 → `docker compose up -d --build` → 等健康检查 → 打开浏览器
+- `demo` 在 `start` 之后自动 POST 11 路流，每路对应 `project1/` 下一段行为视频，**一键完成演示布置**
 
 如果你想手动走，按下面步骤来：
 
